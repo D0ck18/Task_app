@@ -802,6 +802,53 @@
       width: 10px; height: 10px; border-radius: 50%; background: #ef4444;
     }
 
+    /* Task detail popover (calendar) */
+    .cal-task-popover {
+      position: fixed; z-index: 300;
+      background: var(--bg); border: 1.5px solid var(--border);
+      border-radius: 14px; padding: 16px;
+      width: 280px; max-width: calc(100vw - 32px);
+      box-shadow: var(--shadow-md);
+      animation: popover-in 0.15s ease;
+    }
+    @keyframes popover-in {
+      from { opacity: 0; transform: scale(0.95) translateY(4px); }
+      to   { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .cal-popover-header { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
+    .cal-popover-title { font-size: 0.9rem; font-weight: 700; flex: 1; line-height: 1.4; }
+    .cal-popover-close {
+      background: var(--surface); border: none; border-radius: 6px;
+      padding: 3px 7px; cursor: pointer; color: var(--text-muted);
+      font-size: 1rem; line-height: 1; flex-shrink: 0;
+      transition: background var(--transition);
+    }
+    .cal-popover-close:hover { background: var(--border); }
+    .cal-popover-meta { font-size: 0.78rem; color: var(--text-muted); margin-bottom: 4px; }
+    .cal-popover-meta span { color: var(--text); font-weight: 500; }
+    .cal-popover-notes {
+      font-size: 0.78rem; color: var(--text-muted); margin: 8px 0;
+      line-height: 1.5; border-top: 1px solid var(--border); padding-top: 8px;
+    }
+    .cal-popover-actions { display: flex; gap: 6px; margin-top: 12px; }
+    .cal-popover-btn {
+      flex: 1; padding: 7px; border-radius: 8px; font-size: 0.8rem;
+      font-family: inherit; font-weight: 500; cursor: pointer; border: none;
+      transition: opacity var(--transition);
+    }
+    .cal-popover-btn.primary { background: var(--accent); color: #fff; }
+    .cal-popover-btn.primary:hover { opacity: 0.88; }
+    .cal-popover-btn.secondary { background: var(--surface); color: var(--text); }
+    .cal-popover-btn.secondary:hover { background: var(--border); }
+    .cal-popover-status {
+      display: inline-block; font-size: 0.68rem; font-weight: 600;
+      padding: 2px 8px; border-radius: 10px; margin-bottom: 6px;
+    }
+    .status-open     { background: var(--surface); color: var(--text-muted); }
+    .status-progress { background: var(--accent-light); color: var(--accent); }
+    .status-done     { background: #f0fdf4; color: #16a34a; }
+    @media (prefers-color-scheme: dark) { .status-done { background: #052e16; color: #4ade80; } }
+
     /* ── Overdue badge on tab button ─────────────────────────────────────────── */
     .tab-badge {
       display: inline-block; background: #ef4444; color: #fff;
@@ -1884,9 +1931,8 @@ function renderCalendarWeek() {
     // "Now" line for today
     const nowLine = isT ? (() => {
       const now = new Date();
-      const minOfDay = now.getHours() * 60 + now.getMinutes();
-      const top = (minOfDay / (24 * 60)) * TOTAL_H;
-      return `<div class="cal-now-line" style="top:${top.toFixed(1)}px"></div>`;
+      const top = (now.getHours() + now.getMinutes() / 60) * SLOT_H;
+      return `<div class="cal-now-line" id="calNowLine" style="top:${top.toFixed(1)}px"></div>`;
     })() : '';
 
     // Timed task blocks — positioned by due_time within THIS column (ds)
@@ -1951,10 +1997,8 @@ function renderCalendarWeek() {
   const body = document.querySelector('.cal-week-body');
   if (body) {
     const now = new Date();
-    const minOfDay = days.includes(today)
-      ? now.getHours() * 60 + now.getMinutes()
-      : 8 * 60;
-    setTimeout(() => { body.scrollTop = Math.max(0, (minOfDay / (24*60)) * TOTAL_H - 100); }, 30);
+    const scrollHour = days.includes(today) ? now.getHours() + now.getMinutes() / 60 : 8;
+    setTimeout(() => { body.scrollTop = Math.max(0, scrollHour * SLOT_H - 100); }, 30);
   }
 }
 
@@ -2658,7 +2702,23 @@ document.getElementById('taskList').addEventListener('click', async e => {
   }
 
   if (act === 'cal-task') {
-    // Jump to the task in Open view
+    if (state.view === 'calendar') {
+      // Show popover in calendar instead of jumping away
+      const t = state.tasks.find(x => x.id === id); if (!t) return;
+      showCalPopover(t, e.clientX, e.clientY); return;
+    }
+    // In list views, expand inline as before
+    state.expanded = id;
+    render();
+    setTimeout(() => {
+      const el = document.querySelector(`[data-id="${id}"] .task-expand`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+    return;
+  }
+
+  if (act === 'cal-popover-edit') {
+    closeCalPopover();
     state.view = 'open';
     document.querySelectorAll('.view-btn').forEach(b =>
       b.classList.toggle('active', b.dataset.view === 'open'));
@@ -2670,6 +2730,23 @@ document.getElementById('taskList').addEventListener('click', async e => {
     }, 50);
     return;
   }
+
+  if (act === 'cal-popover-done') {
+    const t = state.tasks.find(x => x.id === id); if (!t) return;
+    const nextStatus = t.status === 'done' ? 'open' : 'done';
+    closeCalPopover();
+    await run(async () => {
+      await patchTask(id, { status: nextStatus });
+      if (nextStatus === 'done') {
+        const before = state.tasks.length;
+        state.tasks = spawnNextOccurrence(t, state.tasks);
+        if (state.tasks.length > before) toast('Done — next occurrence added');
+      }
+    });
+    return;
+  }
+
+  if (act === 'cal-popover-close') { closeCalPopover(); return; }
 });
 
 // Also handle Enter on subtask input
@@ -2708,9 +2785,64 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') capture();
 });
 
+// ── Calendar task popover ────────────────────────────────────────────────────
+function showCalPopover(t, cx, cy) {
+  closeCalPopover();
+  const statusCls = t.status === 'done' ? 'status-done' : t.status === 'inprogress' ? 'status-progress' : 'status-open';
+  const statusLabel = t.status === 'done' ? 'Done' : t.status === 'inprogress' ? 'In Progress' : 'Open';
+  const pop = document.createElement('div');
+  pop.className = 'cal-task-popover';
+  pop.id = 'calTaskPopover';
+  pop.innerHTML = `
+    <div class="cal-popover-header">
+      <div class="cal-popover-title">${h(t.title)}</div>
+      <button class="cal-popover-close" data-act="cal-popover-close">×</button>
+    </div>
+    <span class="cal-popover-status ${statusCls}">${statusLabel}</span>
+    ${t.due_date ? `<div class="cal-popover-meta">Due: <span>${t.due_date}${t.due_time ? ' at ' + fmtTime(t.due_time) : ''}</span></div>` : ''}
+    ${t.folder  ? `<div class="cal-popover-meta">Folder: <span>${h(t.folder)}</span></div>` : ''}
+    ${t.notes   ? `<div class="cal-popover-notes">${h(t.notes)}</div>` : ''}
+    <div class="cal-popover-actions">
+      <button class="cal-popover-btn secondary" data-act="cal-popover-done" data-id="${h(t.id)}">${t.status === 'done' ? 'Reopen' : 'Mark Done'}</button>
+      <button class="cal-popover-btn primary" data-act="cal-popover-edit" data-id="${h(t.id)}">Edit Task</button>
+    </div>`;
+  document.body.appendChild(pop);
+
+  // Position: prefer right of click, flip left if too close to edge
+  const pw = 280, ph = pop.offsetHeight || 220;
+  let left = cx + 12;
+  let top  = cy - 20;
+  if (left + pw > window.innerWidth - 12) left = cx - pw - 12;
+  if (top + ph > window.innerHeight - 12) top = window.innerHeight - ph - 12;
+  pop.style.left = Math.max(8, left) + 'px';
+  pop.style.top  = Math.max(8, top)  + 'px';
+
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener('click', _calPopoverOutside, { capture: true, once: true });
+  }, 0);
+}
+function _calPopoverOutside(e) {
+  const pop = document.getElementById('calTaskPopover');
+  if (pop && !pop.contains(e.target)) closeCalPopover();
+  else if (pop) document.addEventListener('click', _calPopoverOutside, { capture: true, once: true });
+}
+function closeCalPopover() {
+  const pop = document.getElementById('calTaskPopover');
+  if (pop) pop.remove();
+}
+
 // ── Auto-refresh ─────────────────────────────────────────────────────────────
 setInterval(() => { if (ready() && !state.loading) refresh(); }, 30_000);
 setInterval(renderSync, 5_000);
+
+// ── Live now-line update (every minute) ──────────────────────────────────────
+setInterval(() => {
+  const line = document.getElementById('calNowLine');
+  if (!line) return;
+  const now = new Date();
+  line.style.top = ((now.getHours() + now.getMinutes() / 60) * SLOT_H).toFixed(1) + 'px';
+}, 60_000);
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadCfg();

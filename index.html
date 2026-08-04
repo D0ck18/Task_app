@@ -386,7 +386,20 @@
     .field-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.08); }
     textarea.field-input { resize: vertical; min-height: 68px; }
     .expand-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-    .btn { padding: 7px 16px; border-radius: 8px; font-size: 0.83rem; cursor: pointer; border: none; font-family: inherit; font-weight: 500; transition: opacity var(--transition), transform 0.1s; }
+    .btn { padding: 7px 16px; border-radius: 8px; font-size: 0.83rem; cursor: pointer; border: none; font-family: inherit; font-weight: 500; transition: opacity var(--transition), transform 0.1s; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+    .cal-export-row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .cal-export-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 6px 12px; border-radius: 8px; font-size: 0.78rem; font-weight: 500;
+      cursor: pointer; border: 1.5px solid var(--border); background: none;
+      color: var(--text-muted); font-family: inherit; text-decoration: none;
+      transition: background var(--transition), color var(--transition), border-color var(--transition);
+    }
+    .cal-export-btn:hover { background: var(--surface); color: var(--text); border-color: var(--text-muted); }
+    .cal-export-btn.gcal { border-color: #4285f430; color: #4285f4; }
+    .cal-export-btn.gcal:hover { background: #4285f412; border-color: #4285f4; }
+    .cal-export-btn.ical { border-color: #555af630; color: #555af6; }
+    .cal-export-btn.ical:hover { background: #555af612; border-color: #555af6; }
     .btn:active { transform: scale(0.97); }
     .btn-save   { background: var(--accent); color: #fff; }
     .btn-save:hover { opacity: 0.9; }
@@ -1661,6 +1674,7 @@ function taskItemHtml(t, isSubtask) {
         <button class="btn btn-delete" data-act="delete" data-id="${t.id}">Delete</button>
         ${!isSubtask ? `<button class="btn btn-sub" data-act="showsub" data-id="${t.id}">+ Subtask</button>` : ''}
       </div>
+      ${calExportHtml(t)}
       <div class="add-sub-row" id="subrow-${t.id}" style="display:none">
         <input class="add-sub-input" id="subinput-${t.id}" type="text" placeholder="Subtask title…" autocomplete="off">
         <button class="btn btn-save" data-act="addsub" data-id="${t.id}">Add</button>
@@ -2747,6 +2761,11 @@ document.getElementById('taskList').addEventListener('click', async e => {
   }
 
   if (act === 'cal-popover-close') { closeCalPopover(); return; }
+
+  if (act === 'ics-download') {
+    const t = state.tasks.find(x => x.id === id); if (!t) return;
+    downloadIcs(t); return;
+  }
 });
 
 // Also handle Enter on subtask input
@@ -2785,6 +2804,106 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') capture();
 });
 
+// ── Calendar export helpers ──────────────────────────────────────────────────
+function taskToGCalUrl(t) {
+  // Dates in Google Calendar format: YYYYMMDDTHHmmssZ or YYYYMMDD
+  function toGCalDate(dateStr, timeStr) {
+    if (!dateStr) return null;
+    if (timeStr) {
+      // Local datetime → format as YYYYMMDDTHHmmss (no Z, so it respects local tz)
+      const [y, m, d] = dateStr.split('-');
+      const [hh, mm] = timeStr.split(':');
+      return `${y}${m}${d}T${hh}${mm}00`;
+    }
+    return dateStr.replace(/-/g, ''); // all-day: YYYYMMDD
+  }
+  const start = toGCalDate(t.due_date, t.due_time);
+  if (!start) return null;
+  // End: 1 hour after start for timed, next day for all-day
+  let end;
+  if (t.due_time) {
+    const [hh, mm] = t.due_time.split(':').map(Number);
+    const endH = String(hh + 1).padStart(2, '0');
+    end = start.slice(0, 9) + endH + start.slice(11);
+  } else {
+    const d = new Date(t.due_date + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    end = d.toISOString().slice(0,10).replace(/-/g,'');
+  }
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: t.title,
+    dates: `${start}/${end}`,
+    details: t.notes || '',
+    location: t.context || '',
+  });
+  return `https://calendar.google.com/calendar/render?${params}`;
+}
+
+function taskToIcs(t) {
+  function toIcsDate(dateStr, timeStr) {
+    if (!dateStr) return null;
+    if (timeStr) {
+      const [y, m, d] = dateStr.split('-');
+      const [hh, mm] = timeStr.split(':');
+      return `${y}${m}${d}T${hh}${mm}00`;
+    }
+    return dateStr.replace(/-/g, '');
+  }
+  const start = toIcsDate(t.due_date, t.due_time);
+  if (!start) return null;
+  let end;
+  if (t.due_time) {
+    const [hh, mm] = t.due_time.split(':').map(Number);
+    const endH = String(hh + 1).padStart(2, '0');
+    end = start.slice(0, 9) + endH + start.slice(11);
+  } else {
+    const d = new Date(t.due_date + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    end = d.toISOString().slice(0,10).replace(/-/g,'');
+  }
+  const dtStamp = new Date().toISOString().replace(/[-:]/g,'').slice(0,15) + 'Z';
+  const allDay  = !t.due_time;
+  const dtProp  = allDay ? 'DATE' : 'DATE-TIME';
+  const lines   = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//TaskManager//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${t.id}@taskmanager`,
+    `DTSTAMP:${dtStamp}`,
+    `DTSTART;VALUE=${dtProp}:${start}`,
+    `DTEND;VALUE=${dtProp}:${end}`,
+    `SUMMARY:${t.title.replace(/,/g, '\\,')}`,
+    t.notes   ? `DESCRIPTION:${t.notes.replace(/\n/g,'\\n').replace(/,/g,'\\,')}` : '',
+    t.context ? `LOCATION:${t.context}` : '',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].filter(Boolean).join('\r\n');
+  return lines;
+}
+
+function downloadIcs(t) {
+  const ics = taskToIcs(t);
+  if (!ics) { toast('Task needs a due date to export'); return; }
+  const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `${t.title.slice(0,40).replace(/[^a-z0-9]/gi,'_')}.ics`;
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function calExportHtml(t) {
+  const gcalUrl = taskToGCalUrl(t);
+  if (!t.due_date) return '';
+  return `<div class="cal-export-row">
+    ${gcalUrl ? `<a class="cal-export-btn gcal" href="${gcalUrl}" target="_blank" rel="noopener">📅 Google Calendar</a>` : ''}
+    <button class="cal-export-btn ical" data-act="ics-download" data-id="${h(t.id)}">🍎 Apple / iCal (.ics)</button>
+  </div>`;
+}
+
 // ── Calendar task popover ────────────────────────────────────────────────────
 function showCalPopover(t, cx, cy) {
   closeCalPopover();
@@ -2805,7 +2924,8 @@ function showCalPopover(t, cx, cy) {
     <div class="cal-popover-actions">
       <button class="cal-popover-btn secondary" data-act="cal-popover-done" data-id="${h(t.id)}">${t.status === 'done' ? 'Reopen' : 'Mark Done'}</button>
       <button class="cal-popover-btn primary" data-act="cal-popover-edit" data-id="${h(t.id)}">Edit Task</button>
-    </div>`;
+    </div>
+    ${calExportHtml(t)}`;
   document.body.appendChild(pop);
 
   // Position: prefer right of click, flip left if too close to edge

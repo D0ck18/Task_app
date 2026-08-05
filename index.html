@@ -1179,6 +1179,7 @@
   <div class="undo-progress" id="undoProgress"></div>
 </div>
 <div class="toast" id="toast"></div>
+<input type="file" id="icsFileInput" accept=".ics,text/calendar" style="display:none">
 
 <script>
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -2300,10 +2301,17 @@ document.getElementById('exportBtn').addEventListener('click', e => {
   const r = document.getElementById('exportBtn').getBoundingClientRect();
   menu.style.top  = (r.bottom + 4) + 'px';
   menu.style.right = (document.body.clientWidth - r.right) + 'px';
-  menu.innerHTML = `<button id="expJson">Export JSON</button><button id="expCsv">Export CSV</button>`;
+  menu.innerHTML = `
+    <button id="expJson">Export JSON</button>
+    <button id="expCsv">Export CSV</button>
+    <button id="expImpIcs">Import .ics (Apple / Google)</button>`;
   document.body.appendChild(menu);
   menu.querySelector('#expJson').addEventListener('click', () => { exportTasks('json'); menu.remove(); });
-  menu.querySelector('#expCsv').addEventListener('click', () => { exportTasks('csv');  menu.remove(); });
+  menu.querySelector('#expCsv').addEventListener('click',  () => { exportTasks('csv');  menu.remove(); });
+  menu.querySelector('#expImpIcs').addEventListener('click', () => {
+    menu.remove();
+    document.getElementById('icsFileInput').click();
+  });
   setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
 });
 
@@ -2863,6 +2871,106 @@ document.addEventListener('keydown', e => {
   if (e.key === 'n' && !e.ctrlKey && !e.metaKey && !typing) { e.preventDefault(); document.getElementById('captureInput').focus(); }
   if (e.key === 'Escape' && state.bulkMode) exitBulkMode();
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') capture();
+});
+
+// ── ICS Import ───────────────────────────────────────────────────────────────
+function parseIcs(text) {
+  // Unfold lines (RFC 5545: CRLF + whitespace = continuation)
+  const unfolded = text.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
+  const lines = unfolded.split(/\r\n|\n|\r/);
+
+  const events = [];
+  let current = null;
+
+  lines.forEach(line => {
+    if (line === 'BEGIN:VEVENT') { current = {}; return; }
+    if (line === 'END:VEVENT')   { if (current) events.push(current); current = null; return; }
+    if (!current) return;
+
+    // Split on first colon, ignoring param colons (e.g. DTSTART;VALUE=DATE:20260101)
+    const colonIdx = line.indexOf(':');
+    if (colonIdx < 0) return;
+    const rawKey = line.slice(0, colonIdx).toUpperCase();
+    const val    = line.slice(colonIdx + 1).trim();
+
+    // Extract base key (strip params like ;VALUE=DATE, ;TZID=...)
+    const baseKey = rawKey.split(';')[0];
+
+    if (baseKey === 'SUMMARY')     current.title    = val.replace(/\\,/g,',').replace(/\\n/g,'\n').replace(/\\\\/g,'\\');
+    if (baseKey === 'DESCRIPTION') current.notes    = val.replace(/\\,/g,',').replace(/\\n/g,'\n').replace(/\\\\/g,'\\');
+    if (baseKey === 'LOCATION')    current.context  = val;
+    if (baseKey === 'UID')         current.uid      = val;
+    if (baseKey === 'RRULE')       current.rrule    = val;
+
+    // Parse DTSTART — could be DATE (YYYYMMDD) or DATE-TIME (YYYYMMDDTHHmmss[Z])
+    if (baseKey === 'DTSTART') {
+      if (val.length === 8) {
+        // All-day: YYYYMMDD
+        current.due_date = `${val.slice(0,4)}-${val.slice(4,6)}-${val.slice(6,8)}`;
+      } else if (val.length >= 15) {
+        current.due_date = `${val.slice(0,4)}-${val.slice(4,6)}-${val.slice(6,8)}`;
+        current.due_time = `${val.slice(9,11)}:${val.slice(11,13)}`;
+      }
+    }
+  });
+
+  return events;
+}
+
+function icsEventToTask(ev) {
+  if (!ev.title) return null;
+  const task = newTask(ev.title);
+  if (ev.notes)    task.notes    = ev.notes;
+  if (ev.context)  task.context  = ev.context;
+  if (ev.due_date) task.due_date = ev.due_date;
+  if (ev.due_time) task.due_time = ev.due_time;
+
+  // Parse RRULE → recurrence
+  if (ev.rrule) {
+    const parts = {};
+    ev.rrule.split(';').forEach(p => {
+      const [k, v] = p.split('=');
+      parts[k] = v;
+    });
+    if (parts.FREQ === 'DAILY') {
+      task.recurrence = { type: 'daily', time: ev.due_time || null };
+    } else if (parts.FREQ === 'WEEKLY') {
+      const DAYS = { SU:0, MO:1, TU:2, WE:3, TH:4, FR:5, SA:6 };
+      const day  = parts.BYDAY ? (DAYS[parts.BYDAY.slice(-2)] ?? 0) : 0;
+      task.recurrence = { type: 'weekly', day, time: ev.due_time || null };
+    } else if (parts.FREQ === 'MONTHLY') {
+      const day = parts.BYMONTHDAY ? parseInt(parts.BYMONTHDAY) : 1;
+      task.recurrence = { type: 'monthly', day, time: ev.due_time || null };
+    }
+  }
+
+  return task;
+}
+
+document.getElementById('icsFileInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = ''; // reset so same file can be re-imported
+  if (!file) return;
+  if (!ready()) { toast('Set up GitHub in Settings first'); openSettings(); return; }
+
+  const text   = await file.text();
+  const events = parseIcs(text);
+  if (!events.length) { toast('No events found in file'); return; }
+
+  // Deduplicate against existing tasks by title + due_date
+  const existing = new Set(state.tasks.map(t => `${t.title}|${t.due_date||''}`));
+  const newTasks = events
+    .map(icsEventToTask)
+    .filter(t => t && !existing.has(`${t.title}|${t.due_date||''}`));
+
+  if (!newTasks.length) { toast('All events already exist as tasks'); return; }
+
+  await run(async () => {
+    const tasks = [...newTasks, ...state.tasks];
+    await ghSave(tasks);
+    state.tasks = tasks;
+    toast(`Imported ${newTasks.length} task${newTasks.length > 1 ? 's' : ''}`);
+  });
 });
 
 // ── Calendar export helpers ──────────────────────────────────────────────────

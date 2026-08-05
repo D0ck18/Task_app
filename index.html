@@ -1902,17 +1902,11 @@ function renderCalendarMonth() {
     const ds       = dateStr(year, month, d);
     const isToday  = ds === today;
     const isSel    = ds === state.calDay;
-    const dayTasks = byDate[ds] || [];
-    const chips    = dayTasks.slice(0,3).map(t => {
-      const cls = t.status==='done' ? 'chip-done' : ds<today ? 'chip-overdue' : '';
-      return `<div class="cal-task-chip ${cls}">${h(t.title)}</div>`;
-    }).join('');
-    const more = dayTasks.length > 3 ? `<div class="cal-more">+${dayTasks.length-3} more</div>` : '';
-    const gcalEvs = (gcalByDate()[ds] || []).slice(0,2).map(ev =>
+    const gcalEvs = (gcalByDate()[ds] || []).slice(0,3).map(ev =>
       `<div class="gcal-chip" title="${h(ev.notes||'')}">📅 ${h(ev.title)}</div>`).join('');
-    const hasTasks = (dayTasks.length || (gcalByDate()[ds]||[]).length) ? ' has-tasks' : '';
-    html += `<div class="cal-day${isToday?' today':''}${isSel?' selected-day':''}${hasTasks}" data-act="cal-day" data-date="${ds}">
-      <div class="cal-day-num">${d}</div>${chips}${more}${gcalEvs}</div>`;
+    const hasDot  = (gcalByDate()[ds]||[]).length ? ' has-tasks' : '';
+    html += `<div class="cal-day${isToday?' today':''}${isSel?' selected-day':''}${hasDot}" data-act="cal-day" data-date="${ds}">
+      <div class="cal-day-num">${d}</div>${gcalEvs}</div>`;
   }
   const trailing = (firstDow + daysInMonth) % 7;
   for (let i = 1; i <= (trailing ? 7-trailing : 0); i++) {
@@ -1924,31 +1918,20 @@ function renderCalendarMonth() {
   if (state.calDay) {
     const ds     = state.calDay;
     const d      = parseDateStr(ds);
-    const tasks  = byDate[ds] || [];
-    const label  = `${DOWS_FULL[d.getDay()]}, ${MONTHS_LONG[d.getMonth()]} ${d.getDate()}`;
-    const rows   = tasks.length
-      ? tasks.sort((a,b) => (a.due_time||'99:99').localeCompare(b.due_time||'99:99')).map(t => {
-          const done = t.status === 'done';
-          return `<div class="cal-panel-task${done?' done-task':''}" data-act="cal-task" data-id="${h(t.id)}">
-            <div class="cal-panel-check">${done ? '✓' : ''}</div>
-            <div class="cal-panel-task-title">${h(t.title)}</div>
-            ${t.due_time ? `<div class="cal-panel-time">${fmtTime(t.due_time)}</div>` : ''}
-          </div>`;
-        }).join('')
-      : `<div class="cal-panel-empty">No tasks due this day</div>`;
-    const gcalRows = (gcalByDate()[ds] || []).map(ev =>
-      `<div class="cal-panel-task" style="cursor:default;opacity:0.8">
+    const label    = `${DOWS_FULL[d.getDay()]}, ${MONTHS_LONG[d.getMonth()]} ${d.getDate()}`;
+    const gcalRows = (gcalByDate()[ds] || []).sort((a,b) => (a.due_time||'').localeCompare(b.due_time||'')).map(ev =>
+      `<div class="cal-panel-task" style="cursor:default">
         <div class="cal-panel-check" style="background:#34a853;border-color:#34a853;color:#fff;font-size:0.55rem">G</div>
         <div class="cal-panel-task-title">${h(ev.title)}</div>
         ${ev.due_time ? `<div class="cal-panel-time" style="color:#1e8e3e">${fmtTime(ev.due_time)}</div>` : ''}
       </div>`).join('');
+    const emptyMsg = !gcalRows ? `<div class="cal-panel-empty">No events this day</div>` : '';
     html += `<div class="cal-day-panel">
       <div class="cal-day-panel-header">
         <span class="cal-day-panel-title">${label}</span>
         <button class="cal-day-panel-close" data-act="cal-panel-close">×</button>
       </div>
-      ${gcalRows}
-      ${rows}
+      ${gcalRows}${emptyMsg}
       <button class="cal-panel-add" data-act="cal-day" data-date="${ds}">+ Add task for this day</button>
     </div>`;
   }
@@ -2006,14 +1989,9 @@ function renderCalendarWeek() {
   // ── All-day row (tasks with no due_time) ──
   let allDayCells = '';
   days.forEach(ds => {
-    const tasks = (byDate[ds] || []).filter(t => !t.due_time);
-    const chips = tasks.map(t => {
-      const cls = t.status === 'done' ? 'chip-done' : ds < today ? 'chip-overdue' : '';
-      return `<div class="cal-task-chip ${cls}" data-act="cal-task" data-id="${h(t.id)}" style="margin-bottom:2px">${h(t.title)}</div>`;
-    }).join('');
     const gcalAllDay = (gcalByDate()[ds] || []).filter(ev => !ev.due_time).map(ev =>
       `<div class="gcal-chip" style="margin-bottom:2px">📅 ${h(ev.title)}</div>`).join('');
-    allDayCells += `<div class="cal-week-allday-cell">${chips}${gcalAllDay}</div>`;
+    allDayCells += `<div class="cal-week-allday-cell">${gcalAllDay}</div>`;
   });
 
   // ── Time gutter ──
@@ -2025,7 +2003,6 @@ function renderCalendarWeek() {
   let dayCols = '';
   days.forEach(ds => {
     const isT   = ds === today;
-    const tasks = (byDate[ds] || []).filter(t => t.due_time);
 
     // Hour slots
     const slots = WEEK_HOURS.map(() => `<div class="cal-week-hour-slot"></div>`).join('');
@@ -2037,26 +2014,6 @@ function renderCalendarWeek() {
       return `<div class="cal-now-line" id="calNowLine" style="top:${top.toFixed(1)}px"></div>`;
     })() : '';
 
-    // Timed task blocks — positioned by due_time within THIS column (ds)
-    const blocks = tasks.map(t => {
-      const [hh, mm] = t.due_time.split(':').map(Number);
-      const startMin = hh * 60 + mm;
-      // Duration: parse estimate or default to 45 min
-      let durMin = 45;
-      if (t.estimate) {
-        const s = String(t.estimate).toLowerCase().trim();
-        if (s.endsWith('h')) durMin = Math.round(parseFloat(s) * 60);
-        else if (s.endsWith('m')) durMin = parseInt(s);
-      }
-      const top = (startMin / (24 * 60)) * TOTAL_H;
-      const ht  = Math.max(24, (durMin / (24 * 60)) * TOTAL_H);
-      const cls = t.status === 'done' ? 'chip-done' : ds < today ? 'chip-overdue' : '';
-      return `<div class="cal-timed-block ${cls}" data-act="cal-task" data-id="${h(t.id)}"
-        style="top:${top.toFixed(1)}px;height:${ht.toFixed(1)}px">
-        <div>${fmtTime(t.due_time)}</div>
-        <div style="font-weight:400;opacity:.92;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h(t.title)}</div>
-      </div>`;
-    }).join('');
 
     // GCal timed blocks for this day
     const gcalBlocks = (gcalByDate()[ds] || []).filter(ev => ev.due_time).map(ev => {
@@ -2069,7 +2026,7 @@ function renderCalendarWeek() {
     }).join('');
 
     dayCols += `<div class="cal-week-col${isT ? ' is-today' : ''}">
-      <div style="position:relative;height:${TOTAL_H}px">${slots}${nowLine}${blocks}${gcalBlocks}</div>
+      <div style="position:relative;height:${TOTAL_H}px">${slots}${nowLine}${gcalBlocks}</div>
     </div>`;
   });
 

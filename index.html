@@ -667,6 +667,21 @@
     .cal-task-chip.chip-overdue { background: #fee2e250; color: #ef4444; }
     @media (prefers-color-scheme: dark) { .cal-task-chip.chip-overdue { background: #450a0a50; } }
     .cal-more { font-size: 0.62rem; color: var(--text-muted); margin-top: 1px; }
+    /* Google Calendar event chips */
+    .gcal-chip {
+      font-size: 0.66rem; padding: 2px 5px; border-radius: 4px;
+      background: #34a85320; color: #1e8e3e;
+      margin-bottom: 2px; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; display: block; cursor: default;
+    }
+    @media (prefers-color-scheme: dark) { .gcal-chip { background: #1e8e3e30; color: #4ade80; } }
+    .gcal-timed-block {
+      position: absolute; left: 2px; right: 2px; border-radius: 6px;
+      padding: 3px 6px; background: #34a853; color: #fff;
+      font-size: 0.68rem; font-weight: 600; line-height: 1.35;
+      overflow: hidden; z-index: 1; pointer-events: none;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+    }
     @media (max-width: 599px) {
       .cal-day { min-height: 44px; padding: 4px 3px; }
       .cal-task-chip { display: none; }
@@ -1075,6 +1090,11 @@
       <label>Default Folder <span style="font-weight:400">(optional)</span></label>
       <input id="cfgFolder" type="text" placeholder="e.g. Personal" autocomplete="off">
     </div>
+    <div class="modal-field">
+      <label>Google Calendar Feed URL <span style="font-weight:400">(optional)</span></label>
+      <input id="cfgGcalFeed" type="url" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" autocomplete="off">
+      <p class="modal-hint">Paste your public iCal URL. Events appear on the calendar view only — they won't become tasks.</p>
+    </div>
     <div class="toggle-row">
       <div>
         <label style="display:block;margin-bottom:2px">Auto-expand new tasks</label>
@@ -1197,6 +1217,7 @@ const state = {
   extraFolders: [],
   calYear: new Date().getFullYear(), calMonth: new Date().getMonth(),
   calMode: 'month', calWeekStart: null, calDay: null,
+  gcalEvents: null, gcalLoading: false,
   selected: new Set(), bulkMode: false,
 };
 
@@ -1845,6 +1866,10 @@ function calModeToggleHtml() {
 }
 
 function renderCalendar() {
+  // Kick off a background fetch if we have a feed URL and haven't loaded yet
+  if (cfg.gcalFeed && !state.gcalEvents && !state.gcalLoading) {
+    fetchGcalEvents().then(() => renderCalendar());
+  }
   if (state.calMode === 'week') { renderCalendarWeek(); return; }
   renderCalendarMonth();
 }
@@ -1883,9 +1908,11 @@ function renderCalendarMonth() {
       return `<div class="cal-task-chip ${cls}">${h(t.title)}</div>`;
     }).join('');
     const more = dayTasks.length > 3 ? `<div class="cal-more">+${dayTasks.length-3} more</div>` : '';
-    const hasTasks = dayTasks.length ? ' has-tasks' : '';
+    const gcalEvs = (gcalByDate()[ds] || []).slice(0,2).map(ev =>
+      `<div class="gcal-chip" title="${h(ev.notes||'')}">📅 ${h(ev.title)}</div>`).join('');
+    const hasTasks = (dayTasks.length || (gcalByDate()[ds]||[]).length) ? ' has-tasks' : '';
     html += `<div class="cal-day${isToday?' today':''}${isSel?' selected-day':''}${hasTasks}" data-act="cal-day" data-date="${ds}">
-      <div class="cal-day-num">${d}</div>${chips}${more}</div>`;
+      <div class="cal-day-num">${d}</div>${chips}${more}${gcalEvs}</div>`;
   }
   const trailing = (firstDow + daysInMonth) % 7;
   for (let i = 1; i <= (trailing ? 7-trailing : 0); i++) {
@@ -1909,11 +1936,18 @@ function renderCalendarMonth() {
           </div>`;
         }).join('')
       : `<div class="cal-panel-empty">No tasks due this day</div>`;
+    const gcalRows = (gcalByDate()[ds] || []).map(ev =>
+      `<div class="cal-panel-task" style="cursor:default;opacity:0.8">
+        <div class="cal-panel-check" style="background:#34a853;border-color:#34a853;color:#fff;font-size:0.55rem">G</div>
+        <div class="cal-panel-task-title">${h(ev.title)}</div>
+        ${ev.due_time ? `<div class="cal-panel-time" style="color:#1e8e3e">${fmtTime(ev.due_time)}</div>` : ''}
+      </div>`).join('');
     html += `<div class="cal-day-panel">
       <div class="cal-day-panel-header">
         <span class="cal-day-panel-title">${label}</span>
         <button class="cal-day-panel-close" data-act="cal-panel-close">×</button>
       </div>
+      ${gcalRows}
       ${rows}
       <button class="cal-panel-add" data-act="cal-day" data-date="${ds}">+ Add task for this day</button>
     </div>`;
@@ -1977,7 +2011,9 @@ function renderCalendarWeek() {
       const cls = t.status === 'done' ? 'chip-done' : ds < today ? 'chip-overdue' : '';
       return `<div class="cal-task-chip ${cls}" data-act="cal-task" data-id="${h(t.id)}" style="margin-bottom:2px">${h(t.title)}</div>`;
     }).join('');
-    allDayCells += `<div class="cal-week-allday-cell">${chips}</div>`;
+    const gcalAllDay = (gcalByDate()[ds] || []).filter(ev => !ev.due_time).map(ev =>
+      `<div class="gcal-chip" style="margin-bottom:2px">📅 ${h(ev.title)}</div>`).join('');
+    allDayCells += `<div class="cal-week-allday-cell">${chips}${gcalAllDay}</div>`;
   });
 
   // ── Time gutter ──
@@ -2022,8 +2058,18 @@ function renderCalendarWeek() {
       </div>`;
     }).join('');
 
+    // GCal timed blocks for this day
+    const gcalBlocks = (gcalByDate()[ds] || []).filter(ev => ev.due_time).map(ev => {
+      const [hh, mm] = ev.due_time.split(':').map(Number);
+      const top = (hh + mm / 60) * SLOT_H;
+      return `<div class="gcal-timed-block" style="top:${top.toFixed(1)}px;height:${SLOT_H}px">
+        <div>${fmtTime(ev.due_time)}</div>
+        <div style="font-weight:400;opacity:.92;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(ev.title)}</div>
+      </div>`;
+    }).join('');
+
     dayCols += `<div class="cal-week-col${isT ? ' is-today' : ''}">
-      <div style="position:relative;height:${TOTAL_H}px">${slots}${nowLine}${blocks}</div>
+      <div style="position:relative;height:${TOTAL_H}px">${slots}${nowLine}${blocks}${gcalBlocks}</div>
     </div>`;
   });
 
@@ -2590,6 +2636,7 @@ function openSettings() {
   document.getElementById('cfgToken').value    = cfg.token || '';
   document.getElementById('cfgUsername').value = cfg.username || '';
   document.getElementById('cfgFolder').value   = cfg.defaultFolder || '';
+  document.getElementById('cfgGcalFeed').value = cfg.gcalFeed || '';
   document.getElementById('cfgAutoExpand').checked = !!cfg.autoExpand;
   document.getElementById('settingsModal').classList.add('open');
 }
@@ -2612,7 +2659,9 @@ document.getElementById('saveSettingsBtn').addEventListener('click', async () =>
   cfg = { owner, repo, token,
     username: document.getElementById('cfgUsername').value.trim() || null,
     defaultFolder: document.getElementById('cfgFolder').value.trim() || null,
+    gcalFeed: document.getElementById('cfgGcalFeed').value.trim() || null,
     autoExpand: document.getElementById('cfgAutoExpand').checked };
+  state.gcalEvents = null; // clear cache so it re-fetches
   saveCfg(); closeSettings(); await refresh();
 });
 
@@ -2972,6 +3021,43 @@ document.getElementById('icsFileInput').addEventListener('change', async e => {
     toast(`Imported ${newTasks.length} task${newTasks.length > 1 ? 's' : ''}`);
   });
 });
+
+// ── Google Calendar feed ─────────────────────────────────────────────────────
+const CORS_PROXY = 'https://corsproxy.io/?url=';
+
+async function fetchGcalEvents() {
+  if (!cfg.gcalFeed) return;
+  if (state.gcalLoading) return;
+  if (state.gcalEvents) return; // already loaded
+  state.gcalLoading = true;
+  try {
+    const url = CORS_PROXY + encodeURIComponent(cfg.gcalFeed);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('fetch failed');
+    const text = await res.text();
+    state.gcalEvents = parseIcs(text).map(ev => ({
+      title:    ev.title || '(no title)',
+      due_date: ev.due_date || null,
+      due_time: ev.due_time || null,
+      notes:    ev.notes   || null,
+    })).filter(ev => ev.due_date);
+  } catch(e) {
+    console.warn('GCal feed failed:', e);
+    state.gcalEvents = [];
+  } finally {
+    state.gcalLoading = false;
+  }
+}
+
+function gcalByDate() {
+  if (!state.gcalEvents) return {};
+  const map = {};
+  state.gcalEvents.forEach(ev => {
+    if (!map[ev.due_date]) map[ev.due_date] = [];
+    map[ev.due_date].push(ev);
+  });
+  return map;
+}
 
 // ── Calendar export helpers ──────────────────────────────────────────────────
 function taskToGCalUrl(t) {

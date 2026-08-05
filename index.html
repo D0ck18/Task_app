@@ -1442,12 +1442,20 @@ function subtasksOf(parentId) {
   return state.tasks.filter(t => t.parent_id === parentId);
 }
 
+const PINNED_FOLDERS = [
+  { name: 'School',     icon: '📚' },
+  { name: 'Internship', icon: '💼' },
+  { name: 'Sports',     icon: '🏅' },
+];
+
 function folders() {
+  const pinned = new Set(PINNED_FOLDERS.map(f => f.name));
   const s = new Set([
     ...state.tasks.filter(t => !t.parent_id).map(t => t.folder).filter(Boolean),
     ...state.extraFolders,
   ]);
-  return [...s].sort();
+  // Return non-pinned folders only (pinned are rendered separately)
+  return [...s].filter(f => !pinned.has(f)).sort();
 }
 
 // ── Due date helpers ─────────────────────────────────────────────────────────
@@ -1472,16 +1480,34 @@ function h(s) {
 function renderSidebar() {
   const flist = folders();
   let html = '';
-  [{ id: '__all__', label: 'All' }, { id: '__none__', label: 'No Folder' }, { id: '__flagged__', label: '★ Flagged' }]
+
+  // System views
+  [{ id: '__all__', label: 'All Tasks', icon: '📋' },
+   { id: '__flagged__', label: 'Flagged', icon: '⭐' }]
     .forEach(item => {
-      html += `<button class="sidebar-item${state.folder === item.id ? ' active' : ''}" data-folder="${h(item.id)}">${h(item.label)}</button>`;
+      html += `<button class="sidebar-item${state.folder === item.id ? ' active' : ''}" data-folder="${h(item.id)}">${item.icon} ${h(item.label)}</button>`;
     });
+
+  // Pinned sections
+  html += '<div class="sidebar-divider"></div>';
+  html += `<div style="padding:4px 10px 4px;font-size:0.62rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.07em">Sections</div>`;
+  PINNED_FOLDERS.forEach(({ name, icon }) => {
+    const count = state.tasks.filter(t => t.folder === name && t.status === 'open' && !t.parent_id).length;
+    const badge = count ? `<span style="margin-left:auto;font-size:0.68rem;background:var(--border);color:var(--text-muted);padding:1px 6px;border-radius:8px;font-weight:600">${count}</span>` : '';
+    html += `<button class="sidebar-item${state.folder === name ? ' active' : ''}" data-folder="${h(name)}">${icon} ${h(name)}${badge}</button>`;
+  });
+
+  // User-created folders
   if (flist.length) {
     html += '<div class="sidebar-divider"></div>';
+    html += `<div style="padding:4px 10px 4px;font-size:0.62rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.07em">Folders</div>`;
     flist.forEach(f => {
-      html += `<button class="sidebar-item${state.folder === f ? ' active' : ''}" data-folder="${h(f)}">${h(f)}</button>`;
+      const count = state.tasks.filter(t => t.folder === f && t.status === 'open' && !t.parent_id).length;
+      const badge = count ? `<span style="margin-left:auto;font-size:0.68rem;background:var(--border);color:var(--text-muted);padding:1px 6px;border-radius:8px;font-weight:600">${count}</span>` : '';
+      html += `<button class="sidebar-item${state.folder === f ? ' active' : ''}" data-folder="${h(f)}">📁 ${h(f)}${badge}</button>`;
     });
   }
+
   document.getElementById('sidebarList').innerHTML = html;
 }
 

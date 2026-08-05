@@ -1862,13 +1862,15 @@ function calModeToggleHtml() {
     ${[['month','Month'],['week','Week']].map(([v,l]) =>
       `<button class="cal-mode-btn${state.calMode===v?' active':''}" data-calmode="${v}">${l}</button>`
     ).join('')}
+    <button class="cal-mode-btn" id="calRefresh" title="Refresh Google Calendar">↻</button>
   </div>`;
 }
 
-function renderCalendar() {
-  // Kick off a background fetch if we have a feed URL and haven't loaded yet
-  if (cfg.gcalFeed && !state.gcalEvents && !state.gcalLoading) {
-    fetchGcalEvents().then(() => renderCalendar());
+function renderCalendar(forceRefresh) {
+  // Kick off a background fetch; force=true clears cache and re-fetches
+  if (cfg.gcalFeed && !state.gcalLoading) {
+    if (forceRefresh) state.gcalEvents = null;
+    if (!state.gcalEvents) fetchGcalEvents().then(() => renderCalendar());
   }
   if (state.calMode === 'week') { renderCalendarWeek(); return; }
   renderCalendarMonth();
@@ -2073,6 +2075,10 @@ function renderCalendarWeek() {
 
 function bindCalModeToggle() {
   document.querySelectorAll('.cal-mode-btn').forEach(btn => {
+    if (btn.id === 'calRefresh') {
+      btn.addEventListener('click', e => { e.stopPropagation(); renderCalendar(true); });
+      return;
+    }
     btn.addEventListener('click', e => {
       e.stopPropagation();
       state.calMode = btn.dataset.calmode;
@@ -2982,10 +2988,10 @@ document.getElementById('icsFileInput').addEventListener('change', async e => {
 // ── Google Calendar feed ─────────────────────────────────────────────────────
 const CORS_PROXY = 'https://corsproxy.io/?url=';
 
-async function fetchGcalEvents() {
+async function fetchGcalEvents(force) {
   if (!cfg.gcalFeed) return;
   if (state.gcalLoading) return;
-  if (state.gcalEvents) return; // already loaded
+  if (state.gcalEvents && !force) return; // already loaded
   state.gcalLoading = true;
   try {
     const url = CORS_PROXY + encodeURIComponent(cfg.gcalFeed);

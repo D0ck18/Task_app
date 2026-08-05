@@ -1118,12 +1118,18 @@
       </div>
       <div class="qadd-field">
         <label>Repeat <span style="font-weight:400;opacity:0.7">(optional)</span></label>
-        <select id="qaddRepeat">
+        <select id="qaddRepeat" onchange="toggleQaddRecurFields()">
           <option value="">None</option>
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
         </select>
+        <select id="qaddRepeatDay" style="display:none;margin-top:6px" class="field-input">
+          ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((d,i)=>`<option value="${i}">${d}</option>`).join('')}
+        </select>
+        <input id="qaddRepeatMonthDay" type="number" min="1" max="31" placeholder="Day of month (1–31)"
+          style="display:none;margin-top:6px" class="field-input">
+        <input id="qaddRepeatTime" type="time" style="display:none;margin-top:6px" class="field-input">
       </div>
     </div>
     <div class="qadd-field">
@@ -1334,6 +1340,13 @@ window.toggleRecurFields = function(id) {
   if (daySel)   daySel.style.display   = type === 'weekly'  ? 'block' : 'none';
   if (dayInput) dayInput.style.display = type === 'monthly' ? 'block' : 'none';
   if (timeInput) timeInput.style.display = type ? 'block' : 'none';
+};
+
+window.toggleQaddRecurFields = function() {
+  const type = document.getElementById('qaddRepeat')?.value;
+  document.getElementById('qaddRepeatDay').style.display      = type === 'weekly'  ? 'block' : 'none';
+  document.getElementById('qaddRepeatMonthDay').style.display = type === 'monthly' ? 'block' : 'none';
+  document.getElementById('qaddRepeatTime').style.display     = type ? 'block' : 'none';
 };
 
 function fmtTime(t) {
@@ -2426,6 +2439,12 @@ function openQadd(title, preDate = '') {
   document.getElementById('qaddDue').value = preDate;
   document.getElementById('qaddTime').value = '';
   document.getElementById('qaddRepeat').value = '';
+  document.getElementById('qaddRepeatDay').style.display      = 'none';
+  document.getElementById('qaddRepeatMonthDay').style.display = 'none';
+  document.getElementById('qaddRepeatTime').style.display     = 'none';
+  document.getElementById('qaddRepeatDay').value              = '0';
+  document.getElementById('qaddRepeatMonthDay').value         = '';
+  document.getElementById('qaddRepeatTime').value             = '';
   document.getElementById('qaddTags').value = '';
   document.getElementById('qaddContext').value = '';
   document.getElementById('qaddEstimate').value = '';
@@ -2475,7 +2494,11 @@ async function submitQadd(withDetails) {
     task.tags       = tags;
     task.context    = context;
     task.estimate   = estimate;
-    if (repeatType) task.recurrence = { type: repeatType, time: null };
+    if (repeatType) {
+      task.recurrence = { type: repeatType, time: document.getElementById('qaddRepeatTime').value || null };
+      if (repeatType === 'weekly')  task.recurrence.day = parseInt(document.getElementById('qaddRepeatDay').value ?? '0');
+      if (repeatType === 'monthly') task.recurrence.day = parseInt(document.getElementById('qaddRepeatMonthDay').value || '1');
+    }
     // Apply D-/W- prefix if not already present
     if (tag === 'd' && !/^[Dd]-/.test(task.title)) task.title = 'D-' + task.title;
     if (tag === 'w' && !/^[Ww]-/.test(task.title)) task.title = 'W-' + task.title;
@@ -2903,6 +2926,20 @@ function taskToIcs(t) {
   const dtStamp = new Date().toISOString().replace(/[-:]/g,'').slice(0,15) + 'Z';
   const allDay  = !t.due_time;
   const dtProp  = allDay ? 'DATE' : 'DATE-TIME';
+  // Build RRULE if task has recurrence
+  let rrule = '';
+  if (t.recurrence && t.recurrence.type) {
+    const DAYS_ICS = ['SU','MO','TU','WE','TH','FR','SA'];
+    if (t.recurrence.type === 'daily') {
+      rrule = 'RRULE:FREQ=DAILY';
+    } else if (t.recurrence.type === 'weekly') {
+      const day = DAYS_ICS[t.recurrence.day ?? 0];
+      rrule = `RRULE:FREQ=WEEKLY;BYDAY=${day}`;
+    } else if (t.recurrence.type === 'monthly') {
+      rrule = `RRULE:FREQ=MONTHLY;BYMONTHDAY=${t.recurrence.day ?? 1}`;
+    }
+  }
+
   const lines   = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -2917,6 +2954,7 @@ function taskToIcs(t) {
     `SUMMARY:${t.title.replace(/,/g, '\\,')}`,
     t.notes   ? `DESCRIPTION:${t.notes.replace(/\n/g,'\\n').replace(/,/g,'\\,')}` : '',
     t.context ? `LOCATION:${t.context}` : '',
+    rrule,
     'END:VEVENT',
     'END:VCALENDAR',
   ].filter(Boolean).join('\r\n');

@@ -1434,6 +1434,14 @@ function filtered(tasks) {
     if (state.folder === '__all__')     return true;
     if (state.folder === '__none__')    return !t.folder;
     if (state.folder === '__flagged__') return !!t.flagged;
+    // For pinned sections: match folder OR tag (case-insensitive)
+    const isPinned = PINNED_FOLDERS.some(p => p.name === state.folder);
+    if (isPinned) {
+      const sectionLower = state.folder.toLowerCase();
+      const inFolder = t.folder === state.folder;
+      const inTags   = Array.isArray(t.tags) && t.tags.some(tag => tag.toLowerCase() === sectionLower);
+      return inFolder || inTags;
+    }
     return t.folder === state.folder;
   });
 }
@@ -1492,7 +1500,11 @@ function renderSidebar() {
   html += '<div class="sidebar-divider"></div>';
   html += `<div style="padding:4px 10px 4px;font-size:0.62rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.07em">Sections</div>`;
   PINNED_FOLDERS.forEach(({ name, icon }) => {
-    const count = state.tasks.filter(t => t.folder === name && t.status === 'open' && !t.parent_id).length;
+    const nameLower = name.toLowerCase();
+    const count = state.tasks.filter(t =>
+      t.status === 'open' && !t.parent_id &&
+      (t.folder === name || (Array.isArray(t.tags) && t.tags.some(tag => tag.toLowerCase() === nameLower)))
+    ).length;
     const badge = count ? `<span style="margin-left:auto;font-size:0.68rem;background:var(--border);color:var(--text-muted);padding:1px 6px;border-radius:8px;font-weight:600">${count}</span>` : '';
     html += `<button class="sidebar-item${state.folder === name ? ' active' : ''}" data-folder="${h(name)}">${icon} ${h(name)}${badge}</button>`;
   });
